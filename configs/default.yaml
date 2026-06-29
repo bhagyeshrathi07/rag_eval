@@ -1,0 +1,51 @@
+# ============================================================================
+# Single source of truth for the whole pipeline.
+# Edit THIS file for your machine; the scripts read from here.
+# ============================================================================
+
+paths:
+  base_dir: "."                       # everything is relative to this
+  arxiv_json: "arxiv.json"            # raw corpus (Stage 0 downloads here)
+  sample_json: "arxiv_2025_sample_10k.json"
+  chroma_dir: "./chroma_db"
+  results_dir: "./results"            # *_rag.jsonl and *_eval.jsonl land here
+  colbert_dir: "./colbert_data"
+
+data:
+  zenodo_url: "https://zenodo.org/records/15808027/files/arxiv.json?download=1"
+  years: ["2024", "2025"]             # corpus year filter (paper: 2024-2025)
+  sample_size: 10000
+  seed: 42
+
+embeddings:
+  model: "allenai/specter2_base"
+  doc_adapter: "allenai/specter2"             # proximity adapter for documents
+  query_adapter: "allenai/specter2_adhoc_query"  # ad-hoc query adapter
+  max_length: 512
+  batch_size: 64
+  # Text composed per document. Fields: title, abstract, categories.
+  # Paper-faithful alternative: "Title: {title}\nAbstract: {abstract}"
+  doc_template: "Title: {title}\nAbstract: {abstract}\nCategories: {categories}"
+  collection_name: "arxiv_papers"
+
+serving:
+  base_url: "http://localhost:11434/v1"   # Ollama OpenAI-compatible endpoint
+  api_key: "ollama"                        # any non-empty string for Ollama
+  generator_model: "llama3.1:latest"
+  generator_context_limit: 8192
+  judge_model: "qwen2.5:14b"
+  temperature: 0
+
+retrieval:
+  top_k: 3
+  rerank_candidates: 10                # candidates retrieved before reranking
+  fusion_num_queries: 3                # sub-queries for RRF
+  rrf_k: 60                            # RRF constant
+
+colbert:
+  checkpoint: "colbert-ir/colbertv2.0"
+  doc_maxlen: 512                      # raised from 300 (paper limitation iv)
+  query_maxlen: 64
+  nbits: 2
+  index_name: "arxiv_60k.colbert"
+  pool_size: 60000
