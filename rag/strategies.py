@@ -123,31 +123,76 @@ def fusion(query, generator, collection, config=cfg):
 
 @register("tool_call")
 def tool_call(query, generator, collection, config=cfg):
-    """Agentic retrieval: the generator decides whether to retrieve via a tool.
-
-    Simplified, deterministic version of the notebook's tool loop: offer
-    retrieval; if the model emits a RETRIEVE directive, run retrieval and answer
-    with context; otherwise answer directly. Kept provider-agnostic (no
-    function-calling API) so behavior is reproducible.
+    """Genuinely agentic: the model is given a search_papers tool and decides
+    whether/when to call it. If it retrieves, we run the retrieval, feed results
+    back, and let the model answer grounded in them. If it answers without
+    retrieving, retrieved_ids is empty and we record tool_used=False.
     """
-    decision_prompt = (
-        "You are answering a scientific question. You may retrieve papers if needed.\n"
-        f"Question: {query}\n\n"
-        "If you need to search for papers, reply with exactly:\n"
-        "RETRIEVE: <a concise search query>\n"
-        "If you can answer without retrieval, reply with:\n"
-        "ANSWER: <your answer>"
-    )
-    decision = generator.complete(decision_prompt, desired_output_tokens=256).strip()
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "search_papers",
+            "description": ("Search the scientific paper corpus for papers "
+                            "relevant to a query. Use this whenever you need "
+                            "evidence from the literature to answer."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search_query": {
+                        "type": "string",
+                        "description": "The search query to find relevant papers.",
+                    }
+                },
+                "required": ["search_query"],
+            },
+        },
+    }]
 
-    if decision.upper().startswith("RETRIEVE:"):
-        search_q = decision.split(":", 1)[1].strip()
-        context, ids, _ = retrieve(collection, search_q, config.retrieval.top_k)
-        answer = generator.complete(prompts.answer_prompt(query, context))
-        return {"answer": answer, "retrieved_ids": normalize_doc_ids(ids),
-                "meta": {"tool_used": True, "search_query": search_q}}
-    answer = decision.split(":", 1)[1].strip() if ":" in decision else decision
-    return {"answer": answer, "retrieved_ids": [], "meta": {"tool_used": False}}
+    system = ("You are a scientific assistant. Answer the user's question. "
+              "If you need evidence from the literature, call the search_papers "
+              "tool. Answer only from retrieved papers when you retrieve; if you "
+              "cannot find enough evidence, say the information is insufficient.")
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": query}]
+
+    first = generator.chat(messages, tools=tools, tool_choice="auto",
+                           desired_output_tokens=512)
+
+    tool_calls = getattr(first, "tool_calls", None)
+    if not tool_calls:
+        # Model chose NOT to retrieve — answer is ungrounded by its own choice.
+        return {"answer": (first.content or "").strip(),
+                "retrieved_ids": [], "meta": {"tool_used": False}}
+
+    # Execute the retrieval the model asked for.
+    import json as _json
+    call = tool_calls[0]
+    try:
+        args = _json.loads(call.function.arguments)
+        search_q = args.get("search_query", query)
+    except Exception:
+        search_q = query
+
+    context, ids, _ = retrieve(collection, search_q, config.retrieval.top_k)
+
+    # Feed the tool result back and get the grounded final answer.
+    messages.append({
+        "role": "assistant",
+        "content": first.content or "",
+        "tool_calls": [{
+            "id": call.id,
+            "type": "function",
+            "function": {"name": call.function.name,
+                         "arguments": call.function.arguments},
+        }],
+    })
+    messages.append({"role": "tool", "tool_call_id": call.id,
+                     "content": context})
+    final = generator.chat(messages, desired_output_tokens=1000)
+
+    return {"answer": (final.content or "").strip(),
+            "retrieved_ids": normalize_doc_ids(ids),
+            "meta": {"tool_used": True, "search_query": search_q}}
 
 
 # ColBERT registers itself on import (separate module: it needs its own index).

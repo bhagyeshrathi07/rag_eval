@@ -1,13 +1,17 @@
-"""Stage 4: run one retrieval strategy over all sampled papers.
+"""Stage 4: run one retrieval strategy over the sampled papers that have questions.
 
 Matches the notebook's data layout: one record per paper, with both the problem
-and method query answered, written under "llm_answers" alongside the existing
-"questions". Output: results/arxiv_2025_llama_8b_I_<strategy>_rag.jsonl
+and method query answered, written under "llm_answers". Output:
+results/arxiv_2025_llama_8b_I_<strategy>_rag.jsonl
 
   python -m scripts.run_strategy --strategy classic
   python -m scripts.run_strategy --strategy fusion --collection arxiv_papers_5k
+  python -m scripts.run_strategy --strategy query_rephrased --limit 20   # smoke test
 
+Only papers that already have generated questions are processed; the progress
+bar reflects that count (not the full sample), so the time estimate is honest.
 Resumable: skips papers already written to the strategy's results file.
+Use --limit N to process only the first N (after skipping done ones) for testing.
 """
 import argparse
 import json
@@ -22,10 +26,17 @@ from rag.strategies import get_strategy, available
 from rag.io_utils import append_jsonl, done_ids
 
 
+def has_question(rec):
+    q = rec.get("questions") or {}
+    return bool(q.get("problem_query") or q.get("method_query"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--strategy", required=True, choices=available())
     ap.add_argument("--collection", default=cfg.embeddings.collection_name)
+    ap.add_argument("--limit", type=int, default=None,
+                    help="Process only the first N papers-with-questions (testing).")
     args = ap.parse_args()
 
     strat = get_strategy(args.strategy)
@@ -40,16 +51,24 @@ def main():
                             f"arxiv_2025_llama_8b_I_{args.strategy}_rag.jsonl")
     already = done_ids(out_path, key="edge")
 
-    n = 0
-    for rec in tqdm(sample, desc=args.strategy):
+    # Build the actual worklist UP FRONT: papers with questions, not yet done.
+    worklist = []
+    for rec in sample:
         gold = rec.get("edge") or rec.get("id")
-        if gold in already:
+        if gold in already or not has_question(rec):
             continue
+        worklist.append((gold, rec))
+    if args.limit is not None:
+        worklist = worklist[:args.limit]
+
+    print(f"{len(already)} already done; {len(worklist)} papers to process"
+          f"{f' (limited to {args.limit})' if args.limit else ''}.")
+
+    n = 0
+    for gold, rec in tqdm(worklist, desc=args.strategy):
         questions = rec.get("questions", {})
         prob_q = questions.get("problem_query")
         meth_q = questions.get("method_query")
-        if not prob_q and not meth_q:
-            continue
 
         llm_answers, retrieval = {}, {}
         if prob_q:

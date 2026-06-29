@@ -22,11 +22,13 @@ class Specter2Embedder:
         self.batch_size = e.batch_size
 
         self.tokenizer = AutoTokenizer.from_pretrained(e.model)
-        self.model = AutoAdapterModel.from_pretrained(e.model).to(self.device).eval()
+        self.model = AutoAdapterModel.from_pretrained(e.model)
+        # Load adapters BEFORE moving to device (adapters load on CPU).
         self.model.load_adapter(e.doc_adapter, source="hf",
                                 load_as="proximity", set_active=False)
         self.model.load_adapter(e.query_adapter, source="hf",
                                 load_as="adhoc_query", set_active=False)
+        self.model = self.model.to(self.device).eval()
 
     @torch.no_grad()
     def _embed(self, texts: list[str], adapter: str):

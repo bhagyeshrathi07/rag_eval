@@ -44,6 +44,21 @@ class Generator:
         )
         return resp.choices[0].message.content
 
+    def chat(self, messages, tools=None, tool_choice="auto", desired_output_tokens=1000):
+        """Lower-level chat call exposing messages + tools (for agentic flows).
+        Returns the raw message object (which may contain .tool_calls)."""
+        kwargs = dict(
+            model=self.model,
+            messages=messages,
+            max_tokens=desired_output_tokens,
+            temperature=self.temperature,
+        )
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice
+        resp = self.client.chat.completions.create(**kwargs)
+        return resp.choices[0].message
+
 
 class Judge:
     def __init__(self, config=cfg):

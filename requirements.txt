@@ -25,5 +25,8 @@ jupyterlab
 matplotlib
 ipywidgets
 
-# ColBERT (optional; install separately when running that strategy)
-# colbert-ai
+# ColBERT (for the colbert strategy). Needs nvcc present to compile kernels.
+# After install, transformers.AdamW is shimmed in rag/colbert.py (ColBERT 0.2.21
+# imports it but transformers 4.x removed it; only used for training, not inference).
+colbert-ai==0.2.21
+faiss-cpu
