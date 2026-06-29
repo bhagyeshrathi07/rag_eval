@@ -4,12 +4,12 @@
 # ============================================================================
 
 paths:
-  base_dir: "."                       # everything is relative to this
+  base_dir: "/data/bhagyeshrathi"                       # everything is relative to this
   arxiv_json: "arxiv.json"            # raw corpus (Stage 0 downloads here)
   sample_json: "arxiv_2025_sample_10k.json"
-  chroma_dir: "./chroma_db"
-  results_dir: "./results"            # *_rag.jsonl and *_eval.jsonl land here
-  colbert_dir: "./colbert_data"
+  chroma_dir: "/data/bhagyeshrathi/chroma_db"
+  results_dir: "/data/bhagyeshrathi/results"            # *_rag.jsonl and *_eval.jsonl land here
+  colbert_dir: "/data/bhagyeshrathi/colbert_data"
 
 data:
   zenodo_url: "https://zenodo.org/records/15808027/files/arxiv.json?download=1"
