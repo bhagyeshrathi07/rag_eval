@@ -98,7 +98,90 @@ jupyter lab notebooks/analysis.ipynb
 Every `run_strategy` accepts `--limit N` (process only the first N papers, for quick
 smoke tests) and `--collection NAME` (target a specific vector store).
 
-## 4. Validate before the full run
+## 4. Running the full pipeline
+
+The whole pipeline can be driven by `run_all.sh`, or run stage-by-stage. Long
+stages should run inside `tmux` so a dropped SSH connection doesn't kill them.
+
+### One command (all stages)
+
+```bash
+tmux new -s run
+conda activate /path/to/envs/research
+cd /path/to/rag_eval_complete
+./run_all.sh
+# detach: Ctrl-b then d   |   reattach: tmux attach -t run
+```
+
+`run_all.sh` runs: sample -> questions -> index -> 5 Chroma strategies ->
+ColBERT (pool + run) -> judge -> analysis. Every stage is **resumable** and skips
+work already finished, so you can stop and restart freely.
+
+Resume from a stage, or run just one:
+
+```bash
+./run_all.sh --from strategies     # resume from the strategy runs onward
+./run_all.sh --only judge          # run a single stage
+```
+
+Override pool size or target collection without editing the script:
+
+```bash
+COLBERT_POOL=0 ./run_all.sh --only colbert       # full-corpus ColBERT (no confound)
+COLLECTION=arxiv_papers ./run_all.sh --from index
+```
+
+### Stage-by-stage (manual)
+
+See "Run order" above for the individual `python -m scripts.*` commands. Useful
+when you want to inspect output between stages.
+
+### Concurrency
+
+The LLM stages (questions, strategies, judge) issue requests in parallel
+(`serving.workers` in the config). For this to actually speed things up, the
+Ollama server must allow concurrency: set `OLLAMA_NUM_PARALLEL` on the server
+(see Setup > Concurrency). On a single shared GPU, 4-8 is typical; higher risks
+out-of-memory. Without it, requests serialize and the parallel client gives only
+a small speedup.
+
+## 5. Reproducing the paper's results
+
+```bash
+# 1. Environment (install the torch wheel matching your GPU first; see Setup)
+pip install torch --index-url https://download.pytorch.org/whl/cu130
+pip install -r requirements.txt
+ollama pull llama3.1            # generator (fixed across all strategies)
+ollama pull qwen2.5:14b         # judge
+
+# 2. Data (downloads ~4.7 GB from Zenodo record 15808027)
+python -m scripts.download_data
+
+# 3. Full pipeline, paper-faithful settings
+./run_all.sh
+```
+
+Key settings that define the experiment (all in `configs/default.yaml`):
+
+- `data.seed: 42`, `data.sample_size: 10000`, `data.years: [2024, 2025]`
+- `serving.generator_model: llama3.1:latest`, `serving.temperature: 0`
+- `embeddings.model: allenai/specter2_base` (proximity + adhoc_query adapters)
+- `colbert.pool_size: 60000` (10k gold + 50k distractors)
+
+**Deviations from the original paper** (deliberate, documented):
+
+- Embeddings are SPECTER2 (science-tuned), not all-MiniLM-L6-v2.
+- Documents are embedded from Title + Abstract + Categories (paper: Title + Abstract).
+- `tool_call` is a genuine agentic function-calling strategy (the original code
+  duplicated the rerank pipeline under this name).
+- ColBERT `doc_maxlen=512` (paper used 300, which truncated abstracts).
+- Analysis reports both conditional (zeros excluded) and unconditional means.
+
+To reproduce the *original* paper exactly instead, set the embedding model back
+to MiniLM, the doc template to "Title + Abstract" only, and note the tool_call
+caveat above.
+
+## 6. Validate before the full run
 
 Before the multi-hour full build, prove the pipeline on a small slice:
 
@@ -110,7 +193,7 @@ python -m scripts.run_strategy --strategy classic --collection arxiv_papers_5k -
 
 A high self-retrieval rate confirms the embed -> store -> query loop is correct.
 
-## 5. Layout
+## 6. Layout
 
 ```
 configs/default.yaml      all paths, models, hyperparameters
@@ -133,7 +216,7 @@ scripts/                  one entry point per pipeline stage
 notebooks/analysis.ipynb  loads results, makes tables + figures
 ```
 
-## 6. Notes on reproducibility
+## 7. Notes on reproducibility
 
 - Sampling uses a fixed seed (42) and single-pass reservoir sampling over years
   2024-2025.
@@ -148,9 +231,10 @@ notebooks/analysis.ipynb  loads results, makes tables + figures
 - ColBERT uses its own ColBERTv2 embeddings and a separate document pool; the pool
   size (`colbert.pool_size`) controls the gold/distractor ratio.
 
-## 7. Large files
+## 8. Large files
 
 Data and generated artifacts are **not** committed (see `.gitignore`): the raw
 corpus, the sample, the Chroma store, the ColBERT index, and all `results/`. The
 corpus is on Zenodo (record 15808027); the synthetic question set and 10k sample are
 released separately (see the paper's Data Availability section).
+

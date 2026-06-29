@@ -1,28 +1,27 @@
 """ColBERT late-interaction retrieval strategy.
 
-ColBERT uses its OWN token-level embeddings (ColBERTv2), not SPECTER2, and its
-own PLAID index over a separate document pool. Build the pool + index with
-scripts/build_colbert.py first.
-
-The pool is parameterized (config.colbert.pool_size): the paper used 60K
-(10K gold + 50K distractors). Indexing on it lets you reproduce the paper, or
-set pool_size to the full corpus to remove the pool-composition confound
-(paper limitation iv).
+ColBERT uses its OWN token-level embeddings (ColBERTv2) and a separate PLAID
+index over a document pool. Build the pool + index with scripts/build_colbert.py
+first. Pool size (config.colbert.pool_size) controls the gold/distractor ratio.
 """
 from __future__ import annotations
 
 import json
 import os
+import threading
 
 # --- Compatibility shim -----------------------------------------------------
-# ColBERT 0.2.21 imports `AdamW` from transformers, which newer transformers
-# (4.x) removed. AdamW is only used for TRAINING, which we never do (we only
-# index + search a pretrained checkpoint). Alias torch's AdamW so the import
-# succeeds without downgrading transformers (which SPECTER2 needs at 4.57).
+# ColBERT 0.2.21 imports `AdamW` from transformers, which transformers 4.x
+# removed. AdamW is only used for TRAINING (never at inference). Alias torch's
+# AdamW so the import succeeds without downgrading transformers (SPECTER2 needs 4.57).
 import transformers as _t
 import torch as _torch
 if not hasattr(_t, "AdamW"):
     _t.AdamW = _torch.optim.AdamW
+
+# Quiet ColBERT's very verbose per-query logging (it dumps a tokenizer tensor
+# per search otherwise). Must be set before colbert is imported.
+os.environ.setdefault("COLBERT_LOAD_TORCH_EXTENSION_VERBOSE", "False")
 # ---------------------------------------------------------------------------
 
 from . import prompts
@@ -33,10 +32,10 @@ from .strategies import register
 _searcher = None
 _pid_to_doc_id = None
 _pid_to_text = None
+_search_lock = threading.Lock()   # Searcher is not thread-safe; serialize search
 
 
 def _index_paths():
-    """Resolve where the index and pool data live, from config."""
     colbert_dir = cfg.paths.colbert_dir
     experiments_root = os.path.abspath(os.path.join(colbert_dir, "experiments"))
     return {
@@ -49,7 +48,6 @@ def _index_paths():
 
 
 def _load_searcher():
-    """Lazily load the ColBERT PLAID searcher + pid mappings."""
     global _searcher, _pid_to_doc_id, _pid_to_text
     if _searcher is not None:
         return
@@ -64,11 +62,9 @@ def _load_searcher():
             "Run: python -m scripts.build_colbert  first."
         )
 
-    config = ColBERTConfig(
-        nbits=cfg.colbert.nbits,
-        doc_maxlen=cfg.colbert.doc_maxlen,
-        query_maxlen=cfg.colbert.query_maxlen,
-    )
+    config = ColBERTConfig(nbits=cfg.colbert.nbits,
+                           doc_maxlen=cfg.colbert.doc_maxlen,
+                           query_maxlen=cfg.colbert.query_maxlen)
     with Run().context(RunConfig(nranks=1, root=p["experiments_root"],
                                  experiment="arxiv")):
         _searcher = Searcher(index=p["index_name"],
@@ -88,7 +84,8 @@ def retrieve_context_colbert(query, top_k=None):
     """ColBERT MaxSim retrieval. Returns (context_string, doc_ids)."""
     top_k = top_k or cfg.retrieval.top_k
     _load_searcher()
-    pids, ranks, scores = _searcher.search(query, k=top_k)
+    with _search_lock:                       # serialize: Searcher isn't thread-safe
+        pids, ranks, scores = _searcher.search(query, k=top_k)
 
     parts, ids = [], []
     for pid, rank, score in zip(pids, ranks, scores):
@@ -102,7 +99,7 @@ def retrieve_context_colbert(query, top_k=None):
 @register("colbert")
 def colbert(query, generator, collection, config=cfg):
     """ColBERT strategy: retrieve via the PLAID index, answer from that context.
-    `collection` (the Chroma handle) is ignored — ColBERT uses its own index."""
+    `collection` (the Chroma handle) is ignored - ColBERT uses its own index."""
     context, ids = retrieve_context_colbert(query, config.retrieval.top_k)
     answer = generator.complete(prompts.answer_prompt(query, context))
     return {"answer": answer, "retrieved_ids": normalize_doc_ids(ids), "meta": {}}
