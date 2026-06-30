@@ -48,5 +48,5 @@ colbert:
   doc_maxlen: 512                      # raised from 300 (paper limitation iv)
   query_maxlen: 64
   nbits: 2
-  index_name: "arxiv_60k.colbert"
-  pool_size: 60000
+  index_name: "arxiv_full.colbert"
+  pool_size: 0                         # 0 = full corpus (was 60000)
