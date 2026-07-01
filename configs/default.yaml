@@ -33,7 +33,7 @@ serving:
   api_key: "ollama"                        # any non-empty string for Ollama
   generator_model: "llama3.1:latest"
   generator_context_limit: 8192
-  judge_model: "qwen2.5:14b"
+  judge_model: "qwen2.5:32b"
   temperature: 0
   workers: 8                               # concurrent requests for parallel stages (match OLLAMA_NUM_PARALLEL)
 
